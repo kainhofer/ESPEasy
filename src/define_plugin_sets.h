@@ -567,6 +567,7 @@ To create/register a plugin, you have to :
 	#define USES_P180	// Mux
 	#define USES_P181	// TempHumidity_SHT2x
 	#define USES_P182	// MT681
+	#define USES_P197	// RFLink MQTT gateway
 	#define USES_P199	// RF443_KaKu
 	#define USES_P202	// ADC_ACcurrentSensor
 	   #define USES_P205	// FrameOLED      (MERGED?)
