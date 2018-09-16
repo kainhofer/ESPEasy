@@ -133,39 +133,13 @@ boolean Plugin_197(byte function, struct EventStruct *event, String& string)
 
     case PLUGIN_INIT:
       {
-        if (!MQTTclient_197) {
-          MQTTclient_197 = new PubSubClient(espclient_197);
-        }
-        MQTTclient_197->disconnect();
-
-        // Set up Serial (copied from the ser2net plugin P020)
-        LoadTaskSettings(event->TaskIndex);
-        if ((ExtraTaskSettings.TaskDevicePluginConfigLong[0] != 0) && (ExtraTaskSettings.TaskDevicePluginConfigLong[1] != 0)) {
-          #if defined(ESP8266)
-            byte serialconfig = 0x10;
-          #endif
-          #if defined(ESP32)
-            uint32_t serialconfig = 0x8000010;
-          #endif
-          serialconfig += ExtraTaskSettings.TaskDevicePluginConfigLong[3];
-          serialconfig += (ExtraTaskSettings.TaskDevicePluginConfigLong[2] - 5) << 2;
-          if (ExtraTaskSettings.TaskDevicePluginConfigLong[4] == 2)
-            serialconfig += 0x20;
-          #if defined(ESP8266)
-            Serial.begin(ExtraTaskSettings.TaskDevicePluginConfigLong[1], (SerialConfig)serialconfig);
-          #endif
-          #if defined(ESP32)
-            Serial.begin(ExtraTaskSettings.TaskDevicePluginConfigLong[1], serialconfig);
-          #endif
-        }
-
-        success = MQTTConnect_197(ClientName) && MQTTSubscribe_197();
+        success = Plugin_197_setup_serial(event->TaskIndex);
         break;
       }
 
     case PLUGIN_TEN_PER_SECOND:
       {
-        if (!MQTTclient_197->loop()) {		// Listen out for callbacks
+        if (MQTTclient_197 && !MQTTclient_197->loop()) {		// Listen out for callbacks
           Plugin_197_update_connect_status();
         }
         success = true;
@@ -174,8 +148,17 @@ boolean Plugin_197(byte function, struct EventStruct *event, String& string)
 
     case PLUGIN_ONCE_A_SECOND:
       {
+        // Make the initial connection to MQTT, if not connected yet
+        // During the plugin initialization, access to MQTT is not possible for some reason
+        // (crashes with exception 28), so we need to defer MQTT connection until here
+        if (!MQTTclient_197) {
+          MQTTclient_197 = new PubSubClient(espclient_197);
+          MQTTclient_197->disconnect();
+          success = MQTTConnect_197(ClientName) && MQTTSubscribe_197();
+        }
+
         //  Here we check that the MQTT client is alive.
-        if (!MQTTclient_197->connected() || MQTTclient_should_reconnect) {
+        if (MQTTclient_197 && (!MQTTclient_197->connected() || MQTTclient_should_reconnect)) {
           if (MQTTclient_should_reconnect) {
             addLog(LOG_LEVEL_ERROR, F("IMPT : MQTT 037 Intentional reconnect"));
           }
@@ -183,12 +166,11 @@ boolean Plugin_197(byte function, struct EventStruct *event, String& string)
           Plugin_197_update_connect_status();
           delay(250);
 
-          if (! MQTTConnect_197(ClientName)) {
+          Plugin_197_setup_serial(event->TaskIndex);
+          if (! MQTTConnect_197(ClientName) || !MQTTSubscribe_197()) {
             success = false;
             break;
           }
-
-          MQTTSubscribe_197();
         }
 
         success = true;
@@ -248,7 +230,9 @@ boolean Plugin_197(byte function, struct EventStruct *event, String& string)
         serial_buf[bytes_read] = 0;
         String message = (char*)serial_buf;
 
-        // success = Plugin_197_handle_from_rflink(event->TaskIndex, message);
+String dbg = F("Serial message: ");
+addLog(LOG_LEVEL_ERROR, dbg + message);
+        success = Plugin_197_handle_from_rflink(event->TaskIndex, message);
         break;
       }
 
@@ -268,6 +252,35 @@ boolean Plugin_197(byte function, struct EventStruct *event, String& string)
   return success;
 }
 
+boolean Plugin_197_setup_serial(int task) {
+String dbg = F("Serial setup: ");
+  // Set up Serial (copied from the ser2net plugin P020)
+  LoadTaskSettings(task);
+  if (ExtraTaskSettings.TaskDevicePluginConfigLong[1] != 0) {
+    Serial.end();
+    #if defined(ESP8266)
+      byte serialconfig = 0x10;
+    #endif
+    #if defined(ESP32)
+      uint32_t serialconfig = 0x8000010;
+    #endif
+    serialconfig += ExtraTaskSettings.TaskDevicePluginConfigLong[3];
+    serialconfig += (ExtraTaskSettings.TaskDevicePluginConfigLong[2] - 5) << 2;
+    if (ExtraTaskSettings.TaskDevicePluginConfigLong[4] == 2)
+      serialconfig += 0x20;
+    #if defined(ESP8266)
+      Serial.begin(ExtraTaskSettings.TaskDevicePluginConfigLong[1], (SerialConfig)serialconfig);
+    #endif
+    #if defined(ESP32)
+      Serial.begin(ExtraTaskSettings.TaskDevicePluginConfigLong[1], serialconfig);
+    #endif
+addLog(LOG_LEVEL_ERROR, dbg + serialconfig);
+  }
+addLog(LOG_LEVEL_ERROR, F("197 End of serial setup"));
+  return true;
+}
+
+
 boolean Plugin_197_handle_from_mqtt(int task, String message) {
   String TaskName = getTaskDeviceName(task);
   // Log the event
@@ -279,7 +292,7 @@ boolean Plugin_197_handle_from_mqtt(int task, String message) {
 
   // Submit to the RFLink
   if (message.length() > 0) {
-    // Plugin_197_send_rflink(message);
+    Plugin_197_send_rflink(message);
   }
 
   if (Settings.UseRules) {
@@ -298,7 +311,7 @@ boolean Plugin_197_handle_from_rflink(int task, String message) {
   LoadTaskSettings(task);
   LoadCustomTaskSettings(task, (byte*)&cfg, sizeof(cfg));
 
-  // Plugin_197_send_mqtt(message, &cfg);
+  Plugin_197_send_mqtt(message, &cfg);
 
   String log = F("RFmqtt: S>: ");
   addLog(LOG_LEVEL_DEBUG, log + message);
@@ -564,7 +577,7 @@ boolean MQTTConnect_197(String clientid)
     return false; // Not connected, so no use in wasting time to connect to a host.
   }
   ControllerSettingsStruct ControllerSettings;
-  LoadControllerSettings(enabledMqttController, (byte*)&ControllerSettings, sizeof(ControllerSettings));
+  LoadControllerSettings(enabledMqttController, ControllerSettings);
   if (ControllerSettings.UseDNS) {
     MQTTclient_197->setServer(ControllerSettings.getHost().c_str(), ControllerSettings.Port);
   } else {
